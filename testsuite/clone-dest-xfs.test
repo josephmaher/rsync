@@ -1,0 +1,42 @@
+#!/bin/sh
+
+# Copyright (C) 2024 by Joseph Maher <github@josephmaher.org>
+# This program is distributable under the terms of the GNU GPL (see COPYING)
+#
+# Check that the --clone-dest option makes reflinks as requested
+
+. "$suitedir/rsync.fns"
+
+test -f /sbin/mkfs.xfs || test_skipped "Can't find mkfs.xfs (only available on Linus with xfs support)"
+
+# make a btrfs filesystem and mount it
+truncate -s 300M $scratchdir/xfs.image
+/sbin/mkfs.xfs $scratchdir/xfs.image > /dev/null
+mkdir -p $scratchdir/mnt/
+mount -o loop $scratchdir/xfs.image $scratchdir/mnt/ || test_skipped "Can't mount xfs image file, try running as root"
+
+# set up some test files and rsync them
+mkdir $scratchdir/mnt/1 $scratchdir/mnt/2 $scratchdir/mnt/3
+# files should be at least 4K in size so they fill an extent block
+dd if=/dev/urandom of=$scratchdir/mnt/1/a bs=4K count=1 status=none
+# sometimes the extents get cached, sync helps write them to disk
+cp --reflink=never $scratchdir/mnt/1/a $scratchdir/mnt/1/b
+cp --reflink=never $scratchdir/mnt/1/a $scratchdir/mnt/3/a
+
+clonedir=$(realpath $scratchdir/mnt/3)
+
+checkit "$RSYNC -a --clone-dest='$clonedir' '$scratchdir/mnt/1/' '$scratchdir/mnt/2/'" "$scratchdir/mnt/1/" "$scratchdir/mnt/2/"
+
+# check the extents are the same
+
+get_extents() {
+    echo "$(/sbin/xfs_bmap $1 | tail -n 1)"
+}
+
+test "$(get_extents $scratchdir/mnt/2/a)" = "$(get_extents $scratchdir/mnt/3/a)" || test_fail "clone-dest files have different extents"
+
+# clean up
+umount $scratchdir/mnt/
+
+# The script would have aborted on error, so getting here means we've won.
+exit 0

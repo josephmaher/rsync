@@ -48,6 +48,7 @@ char *module_dir;
 /* curr_dir[]/curr_dir_len (read by secure_relative_open) are defined in
  * syscall.c, which every helper links -- no stub needed here. */
 filter_rule_list daemon_filter_list;
+short info_levels[COUNT_INFO], debug_levels[COUNT_DEBUG];
 
  void rprintf(UNUSED(enum logcode code), const char *format, ...)
 {

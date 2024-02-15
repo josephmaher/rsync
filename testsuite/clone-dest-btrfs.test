@@ -1,0 +1,52 @@
+#!/bin/sh
+
+# Copyright (C) 2024 by Joseph Maher <github@josephmaher.org>
+# This program is distributable under the terms of the GNU GPL (see COPYING)
+#
+# Check that the --clone-dest option makes reflinks as requested
+
+. "$suitedir/rsync.fns"
+
+test -f /sbin/mkfs.btrfs || test_skipped "Can't find mkfs.btrfs (only available on Linus with btrfs support)"
+test -f /usr/bin/btrfs-search-metadata || test_skipped "Can't find btrfs-search-metatadata from python3-btrfs (only available on Linux)"
+
+# make a btrfs filesystem and mount it
+truncate -s 115M $scratchdir/btrfs.image
+/sbin/mkfs.btrfs $scratchdir/btrfs.image > /dev/null
+mkdir -p $scratchdir/mnt/
+mount -o loop $scratchdir/btrfs.image $scratchdir/mnt/ || test_skipped "Can't mount btrfs image file, try running as root"
+
+# set up some test files and rsync them
+mkdir $scratchdir/mnt/1 $scratchdir/mnt/2 $scratchdir/mnt/3
+# files should be at least 4K in size so they fill an extent block
+dd if=/dev/urandom of=$scratchdir/mnt/1/a bs=4K count=1 status=none
+# sometimes the extents get cached, sycn helps write them to disk
+sync $scratchdir/mnt/1/a
+cp --reflink=never $scratchdir/mnt/1/a $scratchdir/mnt/1/b
+sync $scratchdir/mnt/1/b
+cp --reflink=never $scratchdir/mnt/1/a $scratchdir/mnt/3/a
+sync $scratchdir/mnt/3/a
+
+clonedir=$(realpath $scratchdir/mnt/3)
+
+checkit "$RSYNC -a --clone-dest='$clonedir' '$scratchdir/mnt/1/' '$scratchdir/mnt/2/'" "$scratchdir/mnt/1/" "$scratchdir/mnt/2/"
+sync $scratchdir/mnt/2/a
+sync $scratchdir/mnt/2/b
+
+# check the extents are the same
+
+get_extents() {
+    result=$(btrfs-search-metadata file $1 | grep disk_bytenr | sed 's/.*disk_bytenr\ //' | sed 's/\ disk_num_bytes.*//')
+    if [ ! -n "$result" ]; then
+        echo "couldn't find extents for " $1
+    fi
+    echo "$result"
+}
+
+test "$(get_extents $scratchdir/mnt/2/a)" = "$(get_extents $scratchdir/mnt/3/a)" || test_fail "clone-dest files have different extents"
+
+# clean up
+umount $scratchdir/mnt/
+
+# The script would have aborted on error, so getting here means we've won.
+exit 0

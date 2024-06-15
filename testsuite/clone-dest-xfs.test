@@ -7,7 +7,7 @@
 
 . "$suitedir/rsync.fns"
 
-test -f /sbin/mkfs.xfs || test_skipped "Can't find mkfs.xfs (only available on Linus with xfs support)"
+test -f /sbin/mkfs.xfs || test_skipped "Can't find mkfs.xfs (only available on Linux with xfs support)"
 
 # make a btrfs filesystem and mount it
 truncate -s 300M $scratchdir/xfs.image

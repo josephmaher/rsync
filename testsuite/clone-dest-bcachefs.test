@@ -7,14 +7,13 @@
 
 . "$suitedir/rsync.fns"
 
-test -f /sbin/mkfs.btrfs || test_skipped "Can't find mkfs.btrfs (only available on Linux with btrfs support)"
-test -f /usr/bin/btrfs-search-metadata || test_skipped "Can't find btrfs-search-metatadata from python3-btrfs (only available on Linux)"
+test -f /sbin/mkfs.bcachefs || test_skipped "Can't find mkfs.btrfs (only available on Linux with btrfs support)"
 
 # make a btrfs filesystem and mount it
-truncate -s 115M $scratchdir/btrfs.image
-/sbin/mkfs.btrfs $scratchdir/btrfs.image > /dev/null
+truncate -s 25M $scratchdir/bcachefs.image
+/sbin/mkfs.bcachefs $scratchdir/bcachefs.image > /dev/null
 mkdir -p $scratchdir/mnt/
-mount -o loop $scratchdir/btrfs.image $scratchdir/mnt/ || test_skipped "Can't mount btrfs image file, try running as root"
+mount -o loop $scratchdir/bcachefs.image $scratchdir/mnt/ || test_skipped "Can't mount btrfs image file, try running as root"
 
 # set up some test files and rsync them
 mkdir $scratchdir/mnt/1 $scratchdir/mnt/2 $scratchdir/mnt/3
@@ -36,7 +35,8 @@ sync $scratchdir/mnt/2/b
 # check the extents are the same
 
 get_extents() {
-    result=$(btrfs-search-metadata file $1 | grep disk_bytenr | sed 's/.*disk_bytenr\ //' | sed 's/\ disk_num_bytes.*//')
+    #try and get the extend id from filefrag
+    result=$(/usr/sbin/filefrag -v $1 | /usr/bin/sed '4!d' | /usr/bin/awk '{ print $4 }')
     if [ ! -n "$result" ]; then
         echo "couldn't find extents for " $1
     fi

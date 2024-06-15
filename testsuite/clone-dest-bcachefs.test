@@ -7,13 +7,13 @@
 
 . "$suitedir/rsync.fns"
 
-test -f /sbin/mkfs.bcachefs || test_skipped "Can't find mkfs.btrfs (only available on Linux with btrfs support)"
+test -f /sbin/mkfs.bcachefs || test_skipped "Can't find mkfs.bcachefs (only available on Linux with bacachefs support)"
 
 # make a btrfs filesystem and mount it
 truncate -s 25M $scratchdir/bcachefs.image
 /sbin/mkfs.bcachefs $scratchdir/bcachefs.image > /dev/null
 mkdir -p $scratchdir/mnt/
-mount -o loop $scratchdir/bcachefs.image $scratchdir/mnt/ || test_skipped "Can't mount btrfs image file, try running as root"
+mount -o loop $scratchdir/bcachefs.image $scratchdir/mnt/ || test_skipped "Can't mount bcachefs image file, try running as root"
 
 # set up some test files and rsync them
 mkdir $scratchdir/mnt/1 $scratchdir/mnt/2 $scratchdir/mnt/3

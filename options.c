@@ -2573,7 +2573,7 @@ char *safe_arg(const char *opt, const char *arg)
 		if (escape_leading_tilde)
 			*t++ = '\\';
 		while (*f) {
-                        if (*f == '\\') {
+			if (*f == '\\') {
 				if (!is_filename_arg || !strchr(WILD_CHARS, f[1]))
 					*t++ = '\\';
 			} else if (strchr(escapes, *f))

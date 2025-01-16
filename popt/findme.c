@@ -9,6 +9,10 @@
 #include "system.h"
 #include "findme.h"
 
+#ifndef HAVE_STRLCPY
+size_t strlcpy(char *d, const char *s, size_t bufsize);
+#endif
+
 const char * findProgramPath(const char * argv0)
 {
     char * path = getenv("PATH");
@@ -25,12 +29,15 @@ const char * findProgramPath(const char * argv0)
     if (path == NULL) return NULL;
 
     bufsize = strlen(path) + 1;
-    start = pathbuf = alloca(bufsize);
+    start = pathbuf = malloc(bufsize);
     if (pathbuf == NULL) return NULL;	/* XXX can't happen */
     strlcpy(pathbuf, path, bufsize);
     bufsize += sizeof "/" - 1 + strlen(argv0);
     buf = malloc(bufsize);
-    if (buf == NULL) return NULL;	/* XXX can't happen */
+    if (buf == NULL) {
+	    free(pathbuf);
+	    return NULL;	/* XXX can't happen */
+    }
 
     chptr = NULL;
     /*@-branchstate@*/
@@ -39,8 +46,10 @@ const char * findProgramPath(const char * argv0)
 	    *chptr = '\0';
 	snprintf(buf, bufsize, "%s/%s", start, argv0);
 
-	if (!access(buf, X_OK))
+	if (!access(buf, X_OK)) {
+	    free(pathbuf);
 	    return buf;
+	}
 
 	if (chptr) 
 	    start = chptr + 1;
@@ -49,6 +58,7 @@ const char * findProgramPath(const char * argv0)
     } while (start && *start);
     /*@=branchstate@*/
 
+    free(pathbuf);
     free(buf);
 
     return NULL;

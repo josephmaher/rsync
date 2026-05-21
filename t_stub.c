@@ -45,7 +45,6 @@ size_t max_alloc = (size_t)-1; /* test helpers are not memory-constrained;
 char *partial_dir;
 char *module_dir;
 filter_rule_list daemon_filter_list;
-short info_levels[COUNT_INFO], debug_levels[COUNT_DEBUG];
 
  void rprintf(UNUSED(enum logcode code), const char *format, ...)
 {

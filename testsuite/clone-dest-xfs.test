@@ -9,7 +9,7 @@
 
 test -f /sbin/mkfs.xfs || test_skipped "Can't find mkfs.xfs (only available on Linux with xfs support)"
 
-# make a btrfs filesystem and mount it
+# make an xfs filesystem and mount it
 truncate -s 300M $scratchdir/xfs.image
 /sbin/mkfs.xfs $scratchdir/xfs.image > /dev/null
 mkdir -p $scratchdir/mnt/

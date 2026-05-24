@@ -7,46 +7,57 @@
 
 . "$suitedir/rsync.fns"
 
-test -f /sbin/mkfs.btrfs || test_skipped "Can't find mkfs.btrfs (only available on Linux with btrfs support)"
-test -f /usr/bin/btrfs-search-metadata || test_skipped "Can't find btrfs-search-metatadata from python3-btrfs (only available on Linux)"
+command -v mkfs.btrfs >/dev/null 2>&1 || test_skipped "Can't find mkfs.btrfs (only available on Linux with btrfs support)"
+command -v filefrag >/dev/null 2>&1 || test_skipped "Can't find filefrag (from e2fsprogs)"
 
-# make a btrfs filesystem and mount it
-truncate -s 115M $scratchdir/btrfs.image
-/sbin/mkfs.btrfs $scratchdir/btrfs.image > /dev/null
-mkdir -p $scratchdir/mnt/
-mount -o loop $scratchdir/btrfs.image $scratchdir/mnt/ || test_skipped "Can't mount btrfs image file, try running as root"
+# make a btrfs filesystem and mount it. 256M stays clear of the small-image
+# thresholds that make mkfs.btrfs switch to mixed mode or fail on some versions.
+truncate -s 256M "$scratchdir/btrfs.image"
+mkfs.btrfs "$scratchdir/btrfs.image" >/dev/null 2>&1 || test_skipped "mkfs.btrfs failed"
+mkdir -p "$scratchdir/mnt/"
+mount -o loop "$scratchdir/btrfs.image" "$scratchdir/mnt/" || test_skipped "Can't mount btrfs image file, try running as root"
+
+# Always unmount, even if an assertion below aborts the test, otherwise the
+# leaked loop mount can wedge the harness when it cleans up the scratch dir.
+# (If rsync.fns ever sets its own EXIT trap, chain to it instead of replacing.)
+trap 'cd /; umount "$scratchdir/mnt/" 2>/dev/null' EXIT
 
 # set up some test files and rsync them
-mkdir $scratchdir/mnt/1 $scratchdir/mnt/2 $scratchdir/mnt/3
-# files should be at least 4K in size so they fill an extent block
-dd if=/dev/urandom of=$scratchdir/mnt/1/a bs=4K count=1 status=none
-# sometimes the extents get cached, sync helps write them to disk
-sync $scratchdir/mnt/1/a
-cp --reflink=never $scratchdir/mnt/1/a $scratchdir/mnt/1/b
-sync $scratchdir/mnt/1/b
-cp --reflink=never $scratchdir/mnt/1/a $scratchdir/mnt/3/a
-sync $scratchdir/mnt/3/a
+mkdir "$scratchdir/mnt/1" "$scratchdir/mnt/2" "$scratchdir/mnt/3"
+# Files must exceed btrfs max_inline (default 2048, can be raised toward
+# nodesize) or they get inlined and cannot be reflinked. 64K is a safe margin.
+dd if=/dev/urandom of="$scratchdir/mnt/1/a" bs=64K count=1 status=none
+cp --reflink=never "$scratchdir/mnt/1/a" "$scratchdir/mnt/1/b"
+# 3/ is the clone-dest source. 3/a has identical *content* to 1/a; note cp does
+# not preserve mtime, so attributes differ - which is fine, --clone-dest clones
+# the data regardless of attribute match and then sets attrs from the source.
+cp --reflink=never "$scratchdir/mnt/1/a" "$scratchdir/mnt/3/a"
 
-clonedir=$(realpath $scratchdir/mnt/3)
+clonedir=$(realpath "$scratchdir/mnt/3")
 
 checkit "$RSYNC -a --clone-dest='$clonedir' '$scratchdir/mnt/1/' '$scratchdir/mnt/2/'" "$scratchdir/mnt/1/" "$scratchdir/mnt/2/"
-sync $scratchdir/mnt/2/a
-sync $scratchdir/mnt/2/b
 
-# check the extents are the same
-
+# Print the physical-offset start of every data extent of a file, in order.
+# -s forces a sync so delalloc is flushed and the offsets are stable; -v gives
+# the per-extent listing. We match only the numbered extent rows, turn ".."
+# into a field separator, and print the physical start column.
 get_extents() {
-    result=$(btrfs-search-metadata file $1 | grep disk_bytenr | sed 's/.*disk_bytenr\ //' | sed 's/\ disk_num_bytes.*//')
-    if [ ! -n "$result" ]; then
-        echo "couldn't find extents for " $1
-    fi
-    echo "$result"
+    filefrag -s -v "$1" | awk '/^[[:space:]]*[0-9]+:/ { gsub(/\.\./, " "); print $4 }'
 }
 
-test "$(get_extents $scratchdir/mnt/2/a)" = "$(get_extents $scratchdir/mnt/3/a)" || test_fail "clone-dest files have different extents"
+# 2/a was built from the clone-dest, so it must share 3/a's physical extents.
+ext_2a=$(get_extents "$scratchdir/mnt/2/a")
+ext_3a=$(get_extents "$scratchdir/mnt/3/a")
+test -n "$ext_2a" || test_fail "no extents found for 2/a (inlined, or filefrag output not parsed?)"
+test "$ext_2a" = "$ext_3a" || test_fail "clone-dest file 2/a does not share extents with 3/a"
 
-# clean up
-umount $scratchdir/mnt/
+# 2/b has no counterpart in the clone-dest, so rsync must have copied it
+# normally: it must NOT share 3/a's extents, even though the data is identical.
+ext_2b=$(get_extents "$scratchdir/mnt/2/b")
+test -n "$ext_2b" || test_fail "no extents found for 2/b"
+test "$ext_2b" != "$ext_3a" || test_fail "2/b unexpectedly shares extents with the clone-dest"
+
+# unmount happens via the EXIT trap
 
 # The script would have aborted on error, so getting here means we've won.
 exit 0

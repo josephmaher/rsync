@@ -60,7 +60,8 @@ CHECK_PROGS = rsync$(EXEEXT) tls$(EXEEXT) getgroups$(EXEEXT) getfsdev$(EXEEXT) \
 	testrun$(EXEEXT) trimslash$(EXEEXT) t_unsafe$(EXEEXT) t_chmod_secure$(EXEEXT) \
 	t_secure_relpath$(EXEEXT) wildtest$(EXEEXT) simdtest$(EXEEXT)
 
-CHECK_SYMLINKS = testsuite/chown-fake.test testsuite/devices-fake.test testsuite/xattrs-hlink.test
+CHECK_SYMLINKS = testsuite/chown-fake_test.py testsuite/devices-fake_test.py \
+	testsuite/xattrs-hlink_test.py testsuite/exclude-lsh_test.py
 
 # Objects for CHECK_PROGS to clean
 CHECK_OBJS=tls.o testrun.o getgroups.o getfsdev.o t_stub.o t_unsafe.o t_chmod_secure.o t_secure_relpath.o trimslash.o wildtest.o
@@ -279,6 +280,8 @@ clean: cleantests
 	rm -f *~ $(OBJS) $(CHECK_PROGS) $(CHECK_OBJS) $(CHECK_SYMLINKS) @MAKE_RRSYNC@ \
 		git-version.h rounding rounding.h *.old rsync*.1 rsync*.5 @MAKE_RRSYNC_1@ \
 		*.html daemon-parm.h help-*.h default-*.h proto.h proto.h-tstamp
+	rm -f *.gcno *.gcda lib/*.gcno lib/*.gcda zlib/*.gcno zlib/*.gcda popt/*.gcno popt/*.gcda
+	rm -rf coverage coverage-tcp
 
 .PHONY: cleantests
 cleantests:
@@ -319,17 +322,66 @@ test: check
 # catch Bash-isms earlier even if we're running on GNU.  Of course, we
 # might lose in the future where POSIX diverges from old sh.
 
+# `make check` runs tests in parallel by default. Override with
+# `make check CHECK_J=1` (serial) or any other value.
+CHECK_J = 8
+
+# Parallelism for `make coverage`. Defaults to the same as CHECK_J: the
+# coverage build sets -fprofile-update=atomic (atomic in-memory counters) and
+# gcc's libgcov serializes the per-source .gcda read-modify-write merge with a
+# file lock, so concurrent rsync processes (incl. the forked sender/generator/
+# receiver) accumulate exactly -- verified by a count-linearity check (a hot
+# line accumulates identically at -j1 and -P16). Override with
+# `make coverage COVERAGE_J=1` if your libgcov does not lock .gcda merges.
+COVERAGE_J = $(CHECK_J)
+
+# Output directory and extra runtests.py flags for `make coverage`. The
+# `coverage-tcp` target reuses the coverage recipe with --use-tcp (real
+# loopback rsyncd, which exercises the TCP accept/auth path and the
+# require_tcp-only tests) and a separate output directory.
+COVERAGE_DIR = coverage
+COVERAGE_RUNFLAGS =
+
 .PHONY: check
 check: all $(CHECK_PROGS) $(CHECK_SYMLINKS)
-	$(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT)
+	$(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT) -j $(CHECK_J)
 
 .PHONY: check29
 check29: all $(CHECK_PROGS) $(CHECK_SYMLINKS)
-	$(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT) --protocol=29
+	$(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT) -j $(CHECK_J) --protocol=29
 
 .PHONY: check30
 check30: all $(CHECK_PROGS) $(CHECK_SYMLINKS)
-	$(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT) --protocol=30
+	$(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT) -j $(CHECK_J) --protocol=30
+
+# Whole-suite gcov coverage report (HTML, with branch + decision coverage).
+# Requires a build configured with --enable-coverage and the `gcovr` tool
+# (pip install gcovr). Runs the suite in parallel (COVERAGE_J, default CHECK_J):
+# this is safe because the coverage build uses -fprofile-update=atomic and
+# libgcov locks the per-source .gcda during its merge, so concurrent rsync
+# processes accumulate exactly (see COVERAGE_J above). Use COVERAGE_J=1 if your
+# toolchain's libgcov does not lock .gcda merges.
+.PHONY: coverage
+coverage: all $(CHECK_PROGS) $(CHECK_SYMLINKS)
+	@case '$(CFLAGS)' in *--coverage*) ;; \
+	  *) echo "*** not a coverage build; reconfigure with --enable-coverage"; exit 1 ;; esac
+	@command -v gcovr >/dev/null 2>&1 || { echo "*** gcovr not found (pip install gcovr)"; exit 1; }
+	find . -name '*.gcda' -delete
+	@rc=0; $(srcdir)/runtests.py --rsync-bin=`pwd`/rsync$(EXEEXT) -j $(COVERAGE_J) $(COVERAGE_RUNFLAGS) || rc=$$?; \
+	  rm -rf $(COVERAGE_DIR) && mkdir -p $(COVERAGE_DIR); \
+	  gcovr --root $(srcdir) --decisions --print-summary \
+	      --html-details -o $(COVERAGE_DIR)/index.html . || exit $$?; \
+	  echo "Coverage report written to $(COVERAGE_DIR)/index.html"; \
+	  if test $$rc != 0; then \
+	    echo "*** test suite FAILED (status $$rc) -- coverage report still written above"; \
+	  fi; \
+	  exit $$rc
+
+# Same as `make coverage` but with the daemon tests run over a real loopback
+# rsyncd (--use-tcp), into a separate report directory.
+.PHONY: coverage-tcp
+coverage-tcp:
+	$(MAKE) coverage COVERAGE_RUNFLAGS=--use-tcp COVERAGE_DIR=coverage-tcp
 
 wildtest.o: wildtest.c t_stub.o lib/wildmatch.c rsync.h config.h
 wildtest$(EXEEXT): wildtest.o lib/compat.o lib/snprintf.o @BUILD_POPT@
@@ -343,14 +395,17 @@ simdtest$(EXEEXT): simd-checksum-x86_64.cpp $(HEADERS)
 	    touch $@; \
 	fi
 
-testsuite/chown-fake.test:
-	ln -s chown.test $(srcdir)/testsuite/chown-fake.test
+testsuite/chown-fake_test.py:
+	ln -s chown_test.py $(srcdir)/testsuite/chown-fake_test.py
 
-testsuite/devices-fake.test:
-	ln -s devices.test $(srcdir)/testsuite/devices-fake.test
+testsuite/devices-fake_test.py:
+	ln -s devices_test.py $(srcdir)/testsuite/devices-fake_test.py
 
-testsuite/xattrs-hlink.test:
-	ln -s xattrs.test $(srcdir)/testsuite/xattrs-hlink.test
+testsuite/xattrs-hlink_test.py:
+	ln -s xattrs_test.py $(srcdir)/testsuite/xattrs-hlink_test.py
+
+testsuite/exclude-lsh_test.py:
+	ln -s exclude_test.py $(srcdir)/testsuite/exclude-lsh_test.py
 
 # This does *not* depend on building or installing: you can use it to
 # check a version installed from a binary or some other source tree,
@@ -358,7 +413,7 @@ testsuite/xattrs-hlink.test:
 
 .PHONY: installcheck
 installcheck: $(CHECK_PROGS) $(CHECK_SYMLINKS)
-	$(srcdir)/runtests.py --rsync-bin="$(bindir)/rsync$(EXEEXT)" --srcdir="$(srcdir)" --tooldir=`pwd`
+	$(srcdir)/runtests.py --rsync-bin="$(bindir)/rsync$(EXEEXT)" --srcdir="$(srcdir)" --tooldir=`pwd` -j $(CHECK_J)
 
 # TODO: Add 'dist' target; need to know which files will be included
 

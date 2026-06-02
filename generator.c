@@ -1004,11 +1004,10 @@ static int try_dests_reg(struct file_struct *file, char *fname, int ndx,
 			if (alt_dest_type == LINK_DEST) {
 				if (!hard_link_one(file, fname, cmpbuf, 1))
 					goto try_a_copy;
-			} else if (do_clone(cmpbuf, fname, file->mode) == 0) {
-				finish_transfer(fname, fname, cmpbuf, NULL, file, 1, 0);
-			} else {
-				rsyserr(FERROR_XFER, errno, "failed to clone %s to %s", cmpbuf, fname);
-				exit_cleanup(RERR_UNSUPPORTED);
+			} else { /* CLONE_DEST fall back to copy if do_clone doesn't work */
+			  if (do_clone(cmpbuf, fname, file->mode) < 0)
+			    goto try_a_copy;
+			  finish_transfer(fname, fname, cmpbuf, NULL, file, 1, 0);
 			}
 			if (atimes_ndx)
 				set_file_attrs(fname, file, sxp, NULL, 0);

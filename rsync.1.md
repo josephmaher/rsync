@@ -2732,7 +2732,8 @@ expand it.
     If _DIR_ is a relative path, it is relative to the destination directory.
     See also [`--compare-dest`](#opt) and [`--copy-dest`](#opt).
 
-    All non-regular files are hard-linked (when possible).
+    Similarly to `--link-dest`, if the reflink operation fails it falls back 
+    to making a regular copy of the file. 
 
 0.  `--compress`, `-z`
 

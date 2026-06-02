@@ -27,7 +27,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y acl libacl1-dev attr libattr1-dev liblz4-dev libzstd-dev libxxhash-dev python3-cmarkgfm openssl gcovr
-        echo "/usr/local/bin" >>$GITHUB_PATH
+        echo "/usr/local/bin" >>"$GITHUB_PATH"
     - name: configure
       run: ./configure --enable-coverage --with-rrsync
     - name: make
@@ -65,6 +65,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
+        retention-days: 45
         name: coverage-html
         path: |
           coverage

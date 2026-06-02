@@ -24,6 +24,7 @@ If no tests are specified, all tests are run.
 
 import argparse
 import concurrent.futures
+import fnmatch
 import glob
 import os
 import subprocess
@@ -35,6 +36,12 @@ def parse_args():
     p = argparse.ArgumentParser(description='Run rsync test suite')
     p.add_argument('tests', nargs='*', metavar='TEST',
                    help='Test names or patterns to run (default: all)')
+    p.add_argument('--exclude', default=None, metavar='LIST',
+                   help='Comma-separated test names/globs to skip entirely: '
+                        'they are not run and not reported as skipped. Useful '
+                        'for tests that cannot work in a given build/CI '
+                        'environment (e.g. a restricted buildd chroot). '
+                        'Falls back to the RSYNC_EXCLUDE environment variable.')
     p.add_argument('-j', '--parallel', type=int, default=1, metavar='N',
                    help='Run up to N tests in parallel (default: 1)')
     p.add_argument('--valgrind', action='store_true',
@@ -53,6 +60,11 @@ def parse_args():
                    help='Per-test timeout in seconds (default: 300)')
     p.add_argument('--rsync-bin', default=None, metavar='PATH',
                    help='Path to rsync binary (default: ./rsync)')
+    p.add_argument('--rsync-bin2', default=None, metavar='PATH',
+                   help='Path to a second ("peer") rsync binary used for the '
+                        'daemon side and remote-shell --rsync-path. Lets the '
+                        'suite mix two rsync versions over the wire. Default: '
+                        'same as --rsync-bin (no version mixing).')
     p.add_argument('--tooldir', default=None, metavar='DIR',
                    help='Tool/build directory (default: cwd)')
     p.add_argument('--srcdir', default=None, metavar='DIR',
@@ -61,6 +73,13 @@ def parse_args():
                    help='Force protocol version (adds --protocol=VER to rsync)')
     p.add_argument('--expect-skipped', default=None, metavar='LIST',
                    help='Comma-separated list of expected-skipped tests')
+    p.add_argument('--expect-result', default=None, metavar='FILE',
+                   help='Path to an expected-outcome manifest (one '
+                        '"<testname> <pass|skip|fail|xfail>" per line). When '
+                        'set, ONLY the tests listed in FILE are run, and each '
+                        "test's actual outcome is compared against its "
+                        'expected one; any mismatch (including an unexpected '
+                        'pass) fails the run. Used for version-mixing CI.')
     p.add_argument('--use-tcp', action='store_true',
                    help='Run daemon tests against a real rsyncd bound to '
                         '127.0.0.1 (non-default). The default is the secure '
@@ -201,6 +220,44 @@ def collect_tests(suitedir, patterns):
     return tests
 
 
+_VALID_OUTCOMES = ('pass', 'skip', 'fail', 'xfail')
+
+
+def parse_expect_result(path):
+    """Parse an expected-outcome manifest into {testbase: outcome}.
+
+    One "<testname> <outcome>" entry per line; '#' comments and blank lines
+    are ignored. outcome is one of pass|skip|fail|xfail. The set of listed
+    tests doubles as the run set (see main()). Exits 2 on a malformed file.
+    """
+    expect = {}
+    with open(path) as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.split('#', 1)[0].strip()
+            if not line:
+                continue
+            fields = line.split()
+            if len(fields) != 2 or fields[1] not in _VALID_OUTCOMES:
+                sys.stderr.write(
+                    f"{path}:{lineno}: expected '<testname> "
+                    f"<{'|'.join(_VALID_OUTCOMES)}>', got: {raw.rstrip()}\n"
+                )
+                sys.exit(2)
+            expect[fields[0]] = fields[1]
+    return expect
+
+
+def outcome_of(result):
+    """Map a per-test exit code to an outcome string."""
+    if result == 0:
+        return 'pass'
+    if result == 77:
+        return 'skip'
+    if result == 78:
+        return 'xfail'
+    return 'fail'
+
+
 def build_rsync_cmd(rsync_bin, args, scratchbase):
     """Build the RSYNC command string for tests."""
     parts = []
@@ -313,6 +370,8 @@ def main():
         args.log_level = int(os.environ.get('loglevel', '1'))
     if args.expect_skipped is None:
         args.expect_skipped = os.environ.get('RSYNC_EXPECT_SKIPPED', 'IGNORE')
+    if args.exclude is None:
+        args.exclude = os.environ.get('RSYNC_EXCLUDE', '')
     if os.environ.get('whichtests'):
         args.tests = [os.environ['whichtests']]
 
@@ -323,6 +382,18 @@ def main():
     if not srcdir or srcdir == '.':
         srcdir = tooldir
     rsync_bin = args.rsync_bin or os.environ.get('rsync_bin') or os.path.join(tooldir, 'rsync')
+    # Absolutize: tests run with subprocess(cwd=TOOLDIR) below, so a relative
+    # argv[0] would re-resolve against TOOLDIR rather than the runner's
+    # invocation cwd, breaking --rsync-bin=../foo/rsync forms.  abspath()
+    # captures os.getcwd() now, which is what the operator intended.
+    if rsync_bin and not os.path.isabs(rsync_bin):
+        rsync_bin = os.path.abspath(rsync_bin)
+
+    # Optional second ("peer") binary for the daemon / remote-shell side, so a
+    # run can mix two rsync versions. Defaults to rsync_bin -> no mixing.
+    rsync_bin2 = args.rsync_bin2 or os.environ.get('rsync_bin2') or rsync_bin
+    if rsync_bin2 and not os.path.isabs(rsync_bin2):
+        rsync_bin2 = os.path.abspath(rsync_bin2)
 
     suitedir = os.path.join(srcdir, 'testsuite')
     scratchbase = os.path.join(os.environ.get('scratchbase', tooldir), 'testtmp')
@@ -332,9 +403,13 @@ def main():
     tls_args = get_tls_args(os.path.join(tooldir, 'config.h'))
     setfacl_nodef = find_setfacl_nodef(scratchbase)
     rsync_cmd = build_rsync_cmd(rsync_bin, args, scratchbase)
+    rsync_peer_cmd = build_rsync_cmd(rsync_bin2, args, scratchbase)
 
     if not os.path.isfile(rsync_bin):
         sys.stderr.write(f"rsync_bin {rsync_bin} is not a file\n")
+        sys.exit(2)
+    if not os.path.isfile(rsync_bin2):
+        sys.stderr.write(f"rsync_bin2 {rsync_bin2} is not a file\n")
         sys.exit(2)
     if not os.path.isdir(srcdir):
         sys.stderr.write(f"srcdir {srcdir} is not a directory\n")
@@ -363,6 +438,8 @@ def main():
     print('=' * 60)
     print(f'{sys.argv[0]} running in {tooldir}')
     print(f'    rsync_bin={rsync_cmd}')
+    if rsync_peer_cmd != rsync_cmd:
+        print(f'    rsync_peer={rsync_peer_cmd}')
     print(f'    srcdir={srcdir}')
     print(f'    TLS_ARGS={tls_args}')
     print(f'    testuser={testuser}')
@@ -392,6 +469,7 @@ def main():
         'TOOLDIR': tooldir,
         'srcdir': srcdir,
         'RSYNC': rsync_cmd,
+        'RSYNC_PEER': rsync_peer_cmd,
         'TLS_ARGS': tls_args,
         'RUNSHFLAGS': '-e',
         'scratchbase': scratchbase,
@@ -418,6 +496,39 @@ def main():
     tests = collect_tests(suitedir, args.tests)
     full_run = len(args.tests) == 0
 
+    # Drop excluded tests entirely (matched by basename against name/glob).
+    excl = [e.strip() for e in args.exclude.split(',') if e.strip()]
+    if excl:
+        before = len(tests)
+        tests = [t for t in tests
+                 if not any(fnmatch.fnmatch(_testbase(t), pat) for pat in excl)]
+        if before != len(tests):
+            print(f"Excluding {before - len(tests)} test(s) matching: "
+                  f"{', '.join(excl)}")
+
+    # An expected-result manifest defines BOTH the run set (its keys) and the
+    # expected per-test outcome (its values). Used for version-mixing runs.
+    expect = parse_expect_result(args.expect_result) if args.expect_result else None
+    if expect is not None:
+        have = {_testbase(t) for t in tests}
+        unknown = sorted(k for k in expect if k not in have)
+        if unknown:
+            sys.stderr.write(
+                "runtests.py: --expect-result lists test(s) with no matching "
+                f"test file (ignored): {', '.join(unknown)}\n"
+            )
+        tests = [t for t in tests if _testbase(t) in expect]
+        full_run = False
+
+    def _cls(outcome):
+        """Equivalence class for outcome comparison: fail and xfail both just
+        mean 'broke', so a manifest 'fail' matches an actual fail OR xfail."""
+        return 'broken' if outcome in ('fail', 'xfail') else outcome
+
+    def mismatch(testbase, actual):
+        """True if actual outcome disagrees with the manifest expectation."""
+        return expect is not None and _cls(expect[testbase]) != _cls(actual)
+
     # Record test order for consistent skipped-list output
     test_order = {_testbase(t): i for i, t in enumerate(tests)}
 
@@ -425,31 +536,33 @@ def main():
     failed = 0
     skipped = 0
     skipped_list = []
+    outcomes = {}  # testbase -> actual outcome string ('pass'/'skip'/'fail'/'xfail')
 
     def process_result(tr):
-        """Process a TestResult and update counters. Returns True if test failed."""
+        """Process a TestResult and update counters. Returns True if the test
+        should count as a failure for --stop-on-fail purposes."""
         nonlocal passed, failed, skipped
         with _print_lock:
             if tr.output:
                 print(tr.output)
         scratchdir = os.path.join(scratchbase, tr.testbase)
+        oc = outcome_of(tr.result)
+        outcomes[tr.testbase] = oc
         if tr.result == 0:
             passed += 1
-            if not args.preserve_scratch and os.path.isdir(scratchdir):
-                subprocess.run(['rm', '-rf', scratchdir], capture_output=True)
-            return False
         elif tr.result == 77:
             skipped_list.append(tr.testbase)
             skipped += 1
-            if not args.preserve_scratch and os.path.isdir(scratchdir):
-                subprocess.run(['rm', '-rf', scratchdir], capture_output=True)
-            return False
-        elif tr.result == 78:
-            failed += 1
-            return True
         else:
             failed += 1
-            return True
+        if tr.result in (0, 77) and not args.preserve_scratch \
+                and os.path.isdir(scratchdir):
+            subprocess.run(['rm', '-rf', scratchdir], capture_output=True)
+        # With a manifest, only a mismatch is a "failure" (an expected fail is
+        # fine); without one, any non-pass/non-skip result is a failure.
+        if expect is not None:
+            return mismatch(tr.testbase, oc)
+        return tr.result not in (0, 77)
 
     if args.parallel > 1:
         # Parallel execution
@@ -516,6 +629,25 @@ def main():
     if vg_errors > 0:
         print(f'      {vg_errors} valgrind error(s) found (see logs in {scratchbase})')
 
+    if expect is not None:
+        # Version-mixing mode: the run is judged purely on whether each test's
+        # actual outcome matched its manifest expectation. An expected 'fail'
+        # is fine; an UNEXPECTED pass (xpass) or any other divergence is not.
+        mismatches = []
+        for tb in sorted(expect, key=lambda x: test_order.get(x, 1 << 30)):
+            actual = outcomes.get(tb, 'notrun')
+            if actual == 'notrun' or mismatch(tb, actual):
+                mismatches.append((tb, expect[tb], actual))
+        if mismatches:
+            print('----- expected-result mismatches:')
+            for tb, want, got in mismatches:
+                tag = ' (xpass)' if _cls(want) == 'broken' and got == 'pass' else ''
+                print(f'      {tb}: expected {want}, got {got}{tag}')
+        print('-' * 60)
+        exit_code = len(mismatches) + vg_errors
+        print(f'overall result is {exit_code}')
+        sys.exit(exit_code)
+
     skipped_str = ','.join(sorted(skipped_list, key=lambda x: test_order.get(x, 0)))
     if full_run and args.expect_skipped != 'IGNORE':
         print('----- skipped results:')
@@ -528,8 +660,15 @@ def main():
     print('-' * 60)
 
     exit_code = failed + vg_errors
-    if exit_code == 0 and skipped_str != args.expect_skipped:
-        exit_code = 1
+    if exit_code == 0:
+        # Compare the skipped set order-insensitively: which tests skipped is
+        # what matters, not the order runtests happened to collect them in
+        # (that order is just sorted filenames -- an easy thing to get subtly
+        # wrong when maintaining the per-platform expected lists).
+        got = set(s for s in skipped_str.split(',') if s)
+        want = set(s for s in args.expect_skipped.split(',') if s)
+        if got != want:
+            exit_code = 1
 
     print(f'overall result is {exit_code}')
     sys.exit(exit_code)

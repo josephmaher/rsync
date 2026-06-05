@@ -55,6 +55,31 @@ def xfs_bmap_extents(path):
     return rows
 
 
+
+def supports_reflink(directory):
+    """True if `directory`'s filesystem can make a reflink.
+
+    Probes with cp --reflink=always on a file above the inline-data threshold
+    (inlined small files can't be cloned). cp computes the arch-correct FICLONE
+    ioctl number for us, so this is more portable than a hardcoded constant.
+    Used by the agnostic and deep tests to skip on non-reflink filesystems.
+    """
+    src = directory / '.reflink_probe.src'
+    dst = directory / '.reflink_probe.dst'
+    try:
+        src.write_bytes(os.urandom(64 * 1024))
+        return subprocess.run(['cp', '--reflink=always', str(src), str(dst)],
+                              capture_output=True).returncode == 0
+    except OSError:
+        return False
+    finally:
+        for p in (src, dst):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
 # ---- the two checks ----
 
 def clone_dest_reflink_check(workdir, get_extents):

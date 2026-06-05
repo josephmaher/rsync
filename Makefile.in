@@ -199,7 +199,7 @@ t_secure_relpath$(EXEEXT): $(T_SECURE_RELPATH_OBJ)
 
 T_CLONE_OBJ = t_clone.o syscall.o util1.o util2.o t_stub.o lib/compat.o lib/snprintf.o lib/wildmatch.o lib/permstring.o @BUILD_POPT@
 t_clone$(EXEEXT): $(T_CLONE_OBJ)
-        $(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(T_CLONE_OBJ) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(T_CLONE_OBJ) $(LIBS)
 
 
 .PHONY: conf

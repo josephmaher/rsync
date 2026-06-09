@@ -2744,6 +2744,9 @@ expand it.
     If _DIR_ is a relative path, it is relative to the destination directory.
     See also [`--compare-dest`](#opt) and [`--copy-dest`](#opt).
 
+    Only regular files can be reflinked; everything else (symlinks, devices, 
+    FIFOs, sockets, directories) are handled as in a normal transfer.
+
     Similarly to `--link-dest`, if the reflink operation fails it falls back 
     to making a regular copy of the file. 
 

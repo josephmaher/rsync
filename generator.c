@@ -1014,9 +1014,10 @@ static int try_dests_reg(struct file_struct *file, char *fname, int ndx,
 			if (preserve_hard_links && F_IS_HLINKED(file))
 				finish_hard_link(file, fname, ndx, &sxp->st, itemizing, code, j);
 			if (!maybe_ATTRS_REPORT && (INFO_GTE(NAME, 2) || stdout_format_has_i > 1)) {
-				itemize(cmpbuf, file, ndx, 1, sxp,
-					ITEM_LOCAL_CHANGE | ITEM_XNAME_FOLLOWS,
-					0, "");
+				if (alt_dest_type == CLONE_DEST)
+					itemize(cmpbuf, file, ndx, 0, sxp, ITEM_LOCAL_CHANGE, 0, NULL);   /* cf */
+				else
+					itemize(cmpbuf, file, ndx, 1, sxp, ITEM_LOCAL_CHANGE | ITEM_XNAME_FOLLOWS, 0, ""); /* hf */
 			}
 		} else
 #endif

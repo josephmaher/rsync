@@ -136,6 +136,12 @@ def clone_dest_reflink_check(workdir, get_extents):
     if ext_2a != ext_3a:
         test_fail("clone-dest file 2/a does not share extents with 3/a")
 
+    # A reflink shares extents but is a DISTINCT inode -- this is what separates
+    # --clone-dest from --link-dest (a hard link shares extents too, because it's
+    # the same inode, so the extent check alone can't tell them apart).
+    if os.stat(d2 / 'a').st_ino == os.stat(d3 / 'a').st_ino:
+        test_fail("clone-dest hard-linked 2/a to the basis instead of reflinking it")
+
     # 2/b has no counterpart in the clone-dest, so rsync must have copied it
     # normally: it must NOT share 3/a's extents, even though the data matches.
     if not ext_2b:

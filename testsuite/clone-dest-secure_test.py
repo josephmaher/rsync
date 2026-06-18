@@ -20,19 +20,13 @@ import platform
 import subprocess
 
 from rsyncfns import SCRATCHDIR, TOOLDIR, rmtree, test_skipped, test_fail
-from clone_dest_lib import supports_reflink
+from clone_dest_lib import supports_reflink, clone_dest_secure_check
 
 if platform.system() != 'Linux':
     test_skipped("do_clone reflinks require Linux (FICLONE)")
-
-testdir = SCRATCHDIR / 'clone-secure'
-rmtree(testdir)
-testdir.mkdir(parents=True)
-
 if not supports_reflink(SCRATCHDIR):
     test_skipped(f"filesystem under {SCRATCHDIR} does not support reflinks")
 
-proc = subprocess.run([str(TOOLDIR / 't_clone'), str(testdir)])
-if proc.returncode != 0:
-    test_fail("t_clone: do_clone did not confine an escaping basis, or could "
-              "not clone a legitimate one (see stderr above for the case)")
+clone_dest_secure_check(SCRATCHDIR)
+
+print("clone-dest-secure: check passed")

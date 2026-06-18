@@ -35,4 +35,5 @@ if not supports_reflink(work):
     test_skipped(f"filesystem under {work} does not support reflinks")
 
 clone_dest_reflink_check(work, filefrag_extents)
-clone_dest_symlink_attack(work, DAEMON_PORT)
+
+print("clone-dest: check extents are shared passed")

@@ -17,9 +17,8 @@
 # change this, t_clone must be rebuilt with the other version of rsync.
 
 import platform
-import subprocess
 
-from rsyncfns import SCRATCHDIR, TOOLDIR, rmtree, test_skipped, test_fail
+from rsyncfns import SCRATCHDIR, test_skipped
 from clone_dest_lib import supports_reflink, clone_dest_secure_check
 
 if platform.system() != 'Linux':

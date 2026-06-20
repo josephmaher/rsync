@@ -16,14 +16,12 @@
 #
 # Needs a reflink-capable scratch filesystem (FICLONE); skips otherwise.
 
-import os
 import platform
 import shutil
-import subprocess
 
 from rsyncfns import (
     SCRATCHDIR,
-    rsync_argv, rmtree, run_rsync, test_fail, test_skipped,
+    test_skipped,
 )
 from clone_dest_lib import filefrag_extents, supports_reflink, clone_dest_hardlinks_check
 

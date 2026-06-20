@@ -19,15 +19,12 @@
 # Needs a reflink-capable scratch filesystem (FICLONE) and xattr support; skips
 # otherwise. Runs at any uid.
 
-import os
 import platform
 import shutil
-import subprocess
 
 from rsyncfns import (
     SCRATCHDIR,
-    rsync_argv, rmtree, test_fail, test_skipped,
-    xattr_set, xattr_dump, xattrs_supported,
+    test_skipped, xattrs_supported,
 )
 from clone_dest_lib import filefrag_extents, supports_reflink, clone_dest_xattrs_check
 

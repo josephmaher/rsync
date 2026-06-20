@@ -22,14 +22,12 @@ would be cloned from the now-stale basis -- a known property of clone-dest,
 not exercised here.
 """
 
-import os
 import platform
 import shutil
 
 from rsyncfns import (
-    FROMDIR, SCRATCHDIR, TODIR,
-    assert_exists, assert_same, make_tree, rmtree, run_rsync, walk_files,
-    test_fail, test_skipped,
+    SCRATCHDIR,
+    test_skipped,
 )
 from clone_dest_lib import filefrag_extents, supports_reflink, clone_dest_deep_check
 

@@ -20,11 +20,10 @@
 
 import platform
 import shutil
-import subprocess
 
 from rsyncfns import (
-    SCRATCHDIR, make_data_file, makepath, rmtree, rsync_argv,
-    start_test_daemon, test_fail, test_skipped, write_daemon_conf,
+    SCRATCHDIR,
+    test_skipped,
 )
 from clone_dest_lib import filefrag_extents, supports_reflink, clone_dest_module_escape_check
 

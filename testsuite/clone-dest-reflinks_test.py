@@ -13,8 +13,7 @@ import shutil
 
 from rsyncfns import SCRATCHDIR, rmtree, test_skipped
 from clone_dest_lib import (
-    clone_dest_reflink_check, clone_dest_symlink_attack, filefrag_extents,
-    supports_reflink,
+    clone_dest_reflink_check, filefrag_extents, supports_reflink,
 )
 
 DAEMON_PORT = 12887

@@ -15,14 +15,12 @@
 #
 # Needs a reflink-capable scratch filesystem (FICLONE); skips otherwise.
 
-import os
 import platform
 import shutil
 
 from rsyncfns import (
     SCRATCHDIR,
-    all_plus, allspace, dots,
-    checkdiff, rmtree, run_rsync, test_skipped,
+    test_skipped,
 )
 from clone_dest_lib import supports_reflink, clone_dest_itemize_check
 
@@ -35,4 +33,4 @@ if not supports_reflink(SCRATCHDIR):
 
 clone_dest_itemize_check(SCRATCHDIR)
 
-print("clone-test-itemize: checked output of -i / -ii for --clone-dest")
+print("clone-dest-itemize: checked output of -i / -ii for --clone-dest")

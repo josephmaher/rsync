@@ -4,9 +4,8 @@
 #
 # Filesystem-agnostic --clone-dest test. Makes no filesystem and needs no root:
 # it probes whether the filesystem the scratch dir already lives on supports
-# reflinks (FICLONE, via cp --reflink=always), and if so runs the reflink and
-# symlink-attack checks right there. Skips on a non-reflink fs (ext4, tmpfs).
-# This is the one clone-dest test that runs in ordinary unprivileged CI.
+# reflinks (FICLONE, via cp --reflink=always), and if so runs the reflink check
+# to check that --clone-dest is creating files with shared extents.
 
 import platform
 import shutil

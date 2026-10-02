@@ -53,6 +53,8 @@ int safe_symlinks = 0;
 int copy_links = 0;
 int copy_unsafe_links = 0;
 
+short info_levels[COUNT_INFO], debug_levels[COUNT_DEBUG];
+
 #ifdef SUPPORT_XATTRS
 
 #ifdef HAVE_LINUX_XATTRS

@@ -1217,6 +1217,234 @@ int do_link_at(const char *old_path, const char *new_path)
 }
 #endif
 
+#ifdef FICLONE
+/*
+  Symlink-race-safe --clone-dest reflink of <old_path> onto <new_path>, in the
+  same family as do_link_at(): a reflink is the copy-on-write analogue of a
+  hard link, so the threat model and defence are identical and the parent
+  resolution below mirrors do_link_at() exactly:
+
+    - operator_path_resolve set (a non-daemon receiver's --clone-dest side):
+      resolve each parent via the ownership walk (follow uid0/euid symlinks,
+      refuse others), so a foreign-owned symlink raced in after the
+      basis_link_stat() check is still refused;
+    - an absolute side is an operator path: ownership walk (--insecure-links
+      keeps the legacy AT_FDCWD path);
+    - a relative side with a slash: secure_relative_dirfd() confines its
+      parent beneath the module, so a parent-symlink swap (--clone-dest=cd,
+      cd -> /outside) cannot clone an outside file into an attacker-readable
+      target or create the target outside the module;
+    - a bare name lives in CWD (AT_FDCWD).
+
+  The read / unlink / create then go via *at() against those dirfds, with
+  O_NOFOLLOW on each leaf so a leaf-symlink swap cannot escape the confined
+  dirfd; the FICLONE ioctl is fd-based and safe once both fds are open.
+  Everything that do_link_at() sends to do_link() goes to do_clone_plain().
+*/
+
+/* The unconfined variant: local / SSH / chrooted daemon, or the explicit
+ * --insecure-links opt-out. The analogue of do_link() for do_link_at(). */
+static int do_clone_plain(const char *old_path, const char *new_path, mode_t mode)
+{
+	int ifd, ofd, ret, e;
+
+	if ((ifd = do_open(old_path, O_RDONLY, 0)) < 0)
+		return -1;
+	if (robust_unlink(new_path) && errno != ENOENT) {
+		e = errno; close(ifd); errno = e; return -1;
+	}
+	if ((ofd = do_open(new_path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, mode)) < 0) {
+		e = errno; close(ifd); errno = e; return -1;
+	}
+	ret = ioctl(ofd, FICLONE, ifd);
+	e = errno;
+	close(ifd);
+	close(ofd);
+	if (ret < 0)
+		robust_unlink(new_path);
+	errno = e;
+	return ret;
+}
+
+int do_clone(const char *old_path, const char *new_path, mode_t mode)
+{
+#if defined AT_FDCWD
+	char old_dirpath[MAXPATHLEN], new_dirpath[MAXPATHLEN];
+	const char *old_bname, *new_bname;
+	const char *old_slash, *new_slash;
+	int old_dfd = AT_FDCWD, new_dfd = AT_FDCWD;
+	BOOL old_owns = False, new_owns = False;
+	int ifd = -1, ofd = -1, ret, e;
+	size_t old_dlen = 0, new_dlen = 0;
+
+	if (dry_run) return 0;
+	RETURN_ERROR_IF_RO_OR_LO;
+
+	mode &= INITACCESSPERMS;
+
+	/* Same gate as do_link_at(): if confinement isn't active, run plain. */
+	if (!secure_relpath_active())
+		return do_clone_plain(old_path, new_path, mode);
+
+	if (!old_path || !*old_path || !new_path || !*new_path)
+		return do_clone_plain(old_path, new_path, mode);
+
+#if defined O_NOFOLLOW && defined O_DIRECTORY
+	/* Operator-supplied path (a --clone-dest side on a non-daemon receiver):
+	 * resolve each parent via the ownership walk (follow uid0/euid symlinks,
+	 * refuse others). Mirrors do_link_at(). */
+	if (operator_path_resolve) {
+		if (symlink_optout_allowed())
+			return do_clone_plain(old_path, new_path, mode);
+		old_dfd = owner_walk_parent(old_path, &old_bname);
+		if (old_dfd < 0)
+			return -1;
+		new_dfd = owner_walk_parent(new_path, &new_bname);
+		if (new_dfd < 0) {
+			e = errno;
+			close(old_dfd);
+			errno = e;
+			return -1;
+		}
+		old_owns = new_owns = True;
+		goto do_the_clone;
+	}
+#endif
+
+	old_slash = strrchr(old_path, '/');
+	new_slash = strrchr(new_path, '/');
+
+	/* Resolve each path's parent dir independently, exactly as do_link_at():
+	 * absolute -> ownership walk (operator path; --insecure-links keeps the
+	 * legacy AT_FDCWD path); relative-with-slash -> secure_relative_dirfd()
+	 * confined beneath the module; bare name -> CWD (AT_FDCWD). Each side is
+	 * confined independently, so an absolute basis cannot disable
+	 * confinement of a relative destination. */
+	if (*old_path == '/') {
+#if defined O_NOFOLLOW && defined O_DIRECTORY
+		if (!symlink_optout_allowed()) {
+			operator_path_resolve = 1;	/* operator side: enforce module-exclude */
+			old_dfd = owner_walk_parent(old_path, &old_bname);
+			operator_path_resolve = 0;
+			if (old_dfd < 0)
+				return -1;
+			old_owns = True;
+		} else
+#endif
+			old_bname = old_path;
+	} else if (old_slash) {
+		old_dlen = old_slash - old_path;
+		if (old_dlen >= sizeof old_dirpath) { errno = ENAMETOOLONG; return -1; }
+		memcpy(old_dirpath, old_path, old_dlen);
+		old_dirpath[old_dlen] = '\0';
+		old_bname = old_slash + 1;
+		old_dfd = secure_relative_dirfd(NULL, old_dirpath);
+		if (old_dfd < 0)
+			return -1;
+		old_owns = True;
+	} else {
+		old_bname = old_path;
+	}
+
+	if (*new_path == '/') {
+#if defined O_NOFOLLOW && defined O_DIRECTORY
+		if (!symlink_optout_allowed()) {
+			operator_path_resolve = 1;	/* operator side: enforce module-exclude */
+			new_dfd = owner_walk_parent(new_path, &new_bname);
+			operator_path_resolve = 0;
+			if (new_dfd < 0) {
+				e = errno;
+				if (old_owns) close(old_dfd);
+				errno = e;
+				return -1;
+			}
+			new_owns = True;
+		} else
+#endif
+			new_bname = new_path;
+	} else if (new_slash) {
+		new_dlen = new_slash - new_path;
+		if (new_dlen >= sizeof new_dirpath) {
+			e = ENAMETOOLONG;
+			if (old_owns) close(old_dfd);
+			errno = e;
+			return -1;
+		}
+		memcpy(new_dirpath, new_path, new_dlen);
+		new_dirpath[new_dlen] = '\0';
+		new_bname = new_slash + 1;
+		/* reuse old_dfd when both parents are the same dir */
+		if (old_owns && old_dlen == new_dlen
+		 && memcmp(old_dirpath, new_dirpath, old_dlen) == 0) {
+			new_dfd = old_dfd;
+		} else {
+			new_dfd = secure_relative_dirfd(NULL, new_dirpath);
+			if (new_dfd < 0) {
+				e = errno;
+				if (old_owns) close(old_dfd);
+				errno = e;
+				return -1;
+			}
+			new_owns = True;
+		}
+	} else {
+		new_bname = new_path;
+	}
+
+do_the_clone:
+	/* Both parents resolved; do the read / unlink / create via *at() against
+	 * the confined dirfds, O_NOFOLLOW on each leaf. */
+	ifd = openat(old_dfd, old_bname, O_RDONLY | O_NOFOLLOW);
+	if (ifd < 0) {
+		e = errno;
+		if (new_owns) close(new_dfd);
+		if (old_owns) close(old_dfd);
+		errno = e;
+		return -1;
+	}
+	if (unlinkat(new_dfd, new_bname, 0) < 0 && errno != ENOENT) {
+		e = errno;
+		close(ifd);
+		if (new_owns) close(new_dfd);
+		if (old_owns) close(old_dfd);
+		errno = e;
+		return -1;
+	}
+	ofd = openat(new_dfd, new_bname, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode);
+	if (ofd < 0) {
+		e = errno;
+		close(ifd);
+		if (new_owns) close(new_dfd);
+		if (old_owns) close(old_dfd);
+		errno = e;
+		return -1;
+	}
+
+	ret = ioctl(ofd, FICLONE, ifd);
+	e = errno;
+	close(ifd);
+	close(ofd);
+	if (ret < 0)
+		unlinkat(new_dfd, new_bname, 0); /* drop the half-made target */
+	if (new_owns) close(new_dfd);
+	if (old_owns) close(old_dfd);
+	errno = e;
+	return ret;
+#else
+	if (dry_run) return 0;
+	RETURN_ERROR_IF_RO_OR_LO;
+	return do_clone_plain(old_path, new_path, mode & INITACCESSPERMS);
+#endif /* AT_FDCWD */
+}
+#else /* !FICLONE */
+int do_clone(const char *old_path, const char *new_path, mode_t mode)
+{
+	(void)old_path; (void)new_path; (void)mode;
+	errno = ENOTSUP;
+	return -1;
+}
+#endif /* FICLONE */
+
 int do_lchown(const char *path, uid_t owner, gid_t group)
 {
 	if (dry_run) return 0;

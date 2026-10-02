@@ -1093,7 +1093,7 @@ static int try_dests_reg(struct file_struct *file, char *fname, int ndx,
 			best_match = j;
 			match_level = 2;
 		}
-		if (unchanged_attrs(cmpbuf, file, sxp)) {
+		if (alt_dest_type == CLONE_DEST || unchanged_attrs(cmpbuf, file, sxp)) {
 			best_match = j;
 			match_level = 3;
 			break;
@@ -1119,7 +1119,7 @@ static int try_dests_reg(struct file_struct *file, char *fname, int ndx,
 				goto got_nothing_for_ya;
 		}
 #ifdef SUPPORT_HARD_LINKS
-		if (alt_dest_type == LINK_DEST) {
+		if (alt_dest_type == LINK_DEST || alt_dest_type == CLONE_DEST) {
 			/* For a NON-daemon receiver the basis dir is an operator path:
 			 * resolve the link source via the ownership walk so a foreign-owned
 			 * symlink raced in after the basis_link_stat() check is still
@@ -1127,22 +1127,35 @@ static int try_dests_reg(struct file_struct *file, char *fname, int ndx,
 			 * keeps its stronger module-anchored confinement (do_link_at's
 			 * secure_relpath_active path) -- the ownership walk would follow an
 			 * operator-owned symlink out of the module. */
-			int hlok, op = !am_daemon;
-			if (op)
-				operator_path_resolve = 1;
-			hlok = hard_link_one(file, fname, cmpbuf, 1);
-			if (op)
-				operator_path_resolve = 0;
-			if (!hlok)
-				goto try_a_copy;
-			if (atimes_ndx)
+                         if (alt_dest_type == LINK_DEST) {
+				int hlok, op = !am_daemon;
+				if (op)
+					operator_path_resolve = 1;
+				hlok = hard_link_one(file, fname, cmpbuf, 1);
+				if (op)
+					operator_path_resolve = 0;
+				if (!hlok)
+					goto try_a_copy;
+                         } else { /* CLONE_DEST fall back to copy if do_clone doesn't work */
+				int clok, op = !am_daemon;
+				if (op)
+					operator_path_resolve = 1;
+				clok = do_clone(cmpbuf, fname, file->mode) == 0;
+				if (op)
+					operator_path_resolve = 0;
+				if (!clok)
+					goto try_a_copy;
+				finish_transfer(fname, fname, cmpbuf, NULL, file, 1, 0);
+                         }
+			 if (atimes_ndx)
 				set_file_attrs(fname, file, sxp, NULL, 0);
-			if (preserve_hard_links && F_IS_HLINKED(file))
+			 if (preserve_hard_links && F_IS_HLINKED(file))
 				finish_hard_link(file, fname, ndx, &sxp->st, itemizing, code, j);
-			if (!maybe_ATTRS_REPORT && (INFO_GTE(NAME, 2) || stdout_format_has_i > 1)) {
-				itemize(cmpbuf, file, ndx, 1, sxp,
-					ITEM_LOCAL_CHANGE | ITEM_XNAME_FOLLOWS,
-					0, "");
+			 if (!maybe_ATTRS_REPORT && (INFO_GTE(NAME, 2) || stdout_format_has_i > 1)) {
+                         if (alt_dest_type == CLONE_DEST)
+				itemize(cmpbuf, file, ndx, 0, sxp, ITEM_LOCAL_CHANGE, 0, NULL);   /* cf */
+                         else
+				itemize(cmpbuf, file, ndx, 1, sxp, ITEM_LOCAL_CHANGE | ITEM_XNAME_FOLLOWS, 0, ""); /* hf */
 			}
 		} else
 #endif
@@ -1258,7 +1271,7 @@ static int try_dests_non(struct file_struct *file, char *fname, int ndx,
 	if (match_level == 3) {
 		int cannot_hardlink = 0;
 #ifdef SUPPORT_HARD_LINKS
-		if (alt_dest_type == LINK_DEST
+		if ((alt_dest_type == LINK_DEST || alt_dest_type == CLONE_DEST)
 #ifndef CAN_HARDLINK_SYMLINK
 		 && !S_ISLNK(file->mode)
 #endif
